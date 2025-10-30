@@ -1,10 +1,9 @@
 fastapi
-uvicorn[standard]
-psycopg2-binary
+uvicorn
 requests
 beautifulsoup4
-pdfplumber
-pillow
-pytesseract
-playwright
+pandas
+lxml
+pydantic
 python-dotenv
+psycopg2-binary
