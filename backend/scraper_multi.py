@@ -1,107 +1,69 @@
-import os, re, json, tempfile, time, requests, pdfplumber
+import os
+import requests
+import pandas as pd
 from bs4 import BeautifulSoup
-from datetime import date
+from datetime import datetime
 import psycopg2
 
-# Minimal, robust scraper that looks for PDF links or "€" lines in HTML.
-SUPERMARKETS = {
-    "esselunga": {"name":"Esselunga", "base":"https://www.esselunga.it", "urls":["https://www.esselunga.it/it-it/promozioni/volantini.html"]},
-    "carrefour": {"name":"Carrefour", "base":"https://www.carrefour.it", "urls":["https://www.carrefour.it/volantino"]},
-    "coop": {"name":"Coop", "base":"https://www.coop.it", "urls":["https://www.coop.it"]},
-    "conad": {"name":"Conad", "base":"https://www.conad.it", "urls":["https://www.conad.it/it/volantini.html"]},
-    "pam": {"name":"Pam Panorama", "base":"https://www.pampanorama.it", "urls":["https://www.pampanorama.it/volantini"]},
-    "todis": {"name":"Todis", "base":"https://www.todis.it", "urls":["https://www.todis.it/volantini"]},
-    "md": {"name":"MD Discount", "base":"https://www.mdspa.it", "urls":["https://www.mdspa.it/volantino"]},
-    "eurospin": {"name":"Eurospin", "base":"https://www.eurospin.it", "urls":["https://www.eurospin.it/it/volantini"]},
-    "penny": {"name":"Penny Market", "base":"https://www.pennymarket.it", "urls":["https://www.pennymarket.it/it/volantini"]},
-    "lidl": {"name":"Lidl", "base":"https://www.lidl.it", "urls":["https://www.lidl.it/it/volantino"]}
-}
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-HEADERS = {"User-Agent":"SS-SuperSconti-bot/1.0"}
-DB_URL = os.getenv("DATABASE_URL")
+SUPERMARKETS = [
+    "https://www.tigotà.it/offerte",
+    "https://www.todis.it/offerte",
+    "https://www.iperal.it/volantino",
+    "https://www.despar.it/volantino",
+    "https://www.pam.it/offerte/",
+    "https://www.conad.it/volantini.html",
+    "https://www.coop.it/volantino",
+    "https://www.lidl.it/volantino",
+    "https://www.mdspa.it/volantino/",
+    "https://www.eurospin.it/volantino/"
+]
 
-def db_conn():
-    return psycopg2.connect(DB_URL)
+def scrape_offers():
+    offers = []
 
-def download(url):
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    return r.content
+    for url in SUPERMARKETS:
+        try:
+            r = requests.get(url, timeout=10)
+            if r.status_code == 200:
+                soup = BeautifulSoup(r.text, "lxml")
+                text = soup.get_text(" ", strip=True)
+                offers.append({
+                    "supermarket": url.split("//")[1].split("/")[0],
+                    "offer_preview": text[:150],
+                    "timestamp": datetime.utcnow()
+                })
+        except Exception as e:
+            offers.append({
+                "supermarket": url,
+                "offer_preview": f"Errore: {e}",
+                "timestamp": datetime.utcnow()
+            })
 
-def extract_text_pdf_bytes(b):
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as f:
-        f.write(b); path = f.name
-    texts = []
-    try:
-        with pdfplumber.open(path) as pdf:
-            for p in pdf.pages:
-                t = p.extract_text()
-                if t: texts.append(t)
-    finally:
-        try: os.unlink(path)
-        except: pass
-    return "\\n".join(texts)
+    return offers
 
-def find_pdfs(html, base):
-    soup = BeautifulSoup(html, "html.parser")
-    links = []
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if href.lower().endswith(".pdf"):
-            if href.startswith("http"): links.append(href)
-            else: links.append(base.rstrip("/") + "/" + href.lstrip("/"))
-    return list(set(links))
-
-def price_lines(text):
-    lines = []
-    for line in text.splitlines():
-        if "€" in line:
-            lines.append(line.strip())
-    return lines
-
-def save_offer(conn, supermarket_code, name, price_text, url, source_type):
+def save_to_db(data):
+    conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
-    cur.execute("SELECT id FROM supermarkets WHERE code=%s", (supermarket_code,))
-    row = cur.fetchone()
-    if not row:
-        cur.execute("INSERT INTO supermarkets(code,name,website) VALUES (%s,%s,%s) RETURNING id", (supermarket_code, SUPERMARKETS[supermarket_code]['name'], SUPERMARKETS[supermarket_code]['base']))
-        sid = cur.fetchone()[0]; conn.commit()
-    else:
-        sid = row[0]
-    m = re.search(r'(\\d+[\\.,]?\\d*)', price_text)
-    price = float(m.group(1).replace(',', '.')) if m else None
-    cur.execute(\"\"\"INSERT INTO offers(supermarket_id, product_name_raw, price, source_url, source_type, start_date, scraped_at, raw_metadata)
-                   VALUES (%s,%s,%s,%s,%s,%s, now(), %s)\"\"\", (sid, name, price, url, source_type, date.today(), json.dumps({"raw":price_text})))
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS offers (
+            id SERIAL PRIMARY KEY,
+            supermarket TEXT,
+            offer_preview TEXT,
+            timestamp TIMESTAMP
+        );
+    """)
+    for d in data:
+        cur.execute(
+            "INSERT INTO offers (supermarket, offer_preview, timestamp) VALUES (%s, %s, %s)",
+            (d["supermarket"], d["offer_preview"], d["timestamp"])
+        )
     conn.commit()
-
-def process_page(conn, code, url):
-    try:
-        print("GET", url)
-        content = download(url)
-        html = content.decode(errors='ignore')
-    except Exception as e:
-        print("download error", e); return
-    pdfs = find_pdfs(html, SUPERMARKETS[code]['base'])
-    if pdfs:
-        for p in pdfs:
-            try:
-                b = download(p)
-                text = extract_text_pdf_bytes(b)
-                for ln in price_lines(text):
-                    save_offer(conn, code, ln, ln, p, "pdf")
-            except Exception as e:
-                print("pdf parse err", e)
-    else:
-        for ln in price_lines(html):
-            save_offer(conn, code, ln, ln, url, "html")
-
-def run_all():
-    conn = db_conn()
-    for code,cfg in SUPERMARKETS.items():
-        for u in cfg.get("urls", cfg.get("volantino_pages", [])):
-            process_page(conn, code, u)
-            time.sleep(2)
+    cur.close()
     conn.close()
 
 if __name__ == "__main__":
-    run_all()
+    offers = scrape_offers()
+    save_to_db(offers)
+    print("✅ Offerte salvate nel database")
