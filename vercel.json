@@ -1,9 +1,5 @@
 {
-  "builds": [
-    { "src": "frontend/package.json", "use": "@vercel/static-build" }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "frontend/dist/$1" }
-  ],
-  "outputDirectory": "frontend/dist"
+  "buildCommand": "npm run build --prefix frontend",
+  "outputDirectory": "frontend/dist",
+  "framework": "vite"
 }
