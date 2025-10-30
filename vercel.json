@@ -1,8 +1,13 @@
 {
+  "version": 2,
   "builds": [
-    { "src": "frontend/package.json", "use": "@vercel/static-build" }
+    {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "frontend/dist" }
+    }
   ],
-  "buildCommand": "npm run build --prefix frontend",
-  "outputDirectory": "frontend/dist",
-  "framework": "vite"
+  "routes": [
+    { "src": "/(.*)", "dest": "/frontend/dist/index.html" }
+  ]
 }
